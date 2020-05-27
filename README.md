@@ -1,6 +1,8 @@
 # GPU Mangrove
 GPU Mangrove is a predictive model for execution time and power consumption of CUDA kernels. Details can be found in the  publication "A Simple Model for Portable and Fast Prediction of Execution Time and Power Consumption of GPU Kernels".
 
+Due to size restrictions databases are not included in this repository. Execute `download_dbs.sh` to initially download and extract them.
+
 ## Requirements
 
 We provide training data in this repository. To gather your own training data you need to use CUDA Flux.
