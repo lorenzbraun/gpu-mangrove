@@ -154,6 +154,27 @@ def paramstats(args):
     if args.o is not None:
         pickle.dump(param_df, open(args.o, "wb"))
 
+
+def convert(args):
+    gmu.convert(args)
+
+def predict(args):
+    samples_db_path = args.i
+    model_path = args.m
+
+    conn = sqlite3.Connection(samples_db_path)
+    samples = pd.read_sql_query(
+        'select * from samples',
+        conn, index_col=['bench','app','dataset','name'])
+
+    samples.drop(columns=['index','time'])
+
+    X = samples.values
+    model = pickle.load(open(model_path, "rb"))
+    y_pred = model.predict(X)
+    print('Results:')
+    print(y_pred)
+
 def main():
     # TODO global random state
     # TODO verbose level argument
@@ -161,6 +182,11 @@ def main():
                        """GPU Mangrove:
                        preprocess and filter datesets, train GPU Mangrove model with cross-validation or leave-one-out, prediction with trained model.""")
     subparsers = p.add_subparsers()
+
+    p_convert = subparsers.add_parser('convert', help='Convert raw cuda flux measurements into summarized database')
+    p_convert.add_argument('-i', metavar='<input db>', required=True)
+    p_convert.add_argument('-o', metavar='<output db>', required=True)
+    p_convert.set_defaults(func=convert)
 
     p_process = subparsers.add_parser('process', help='Join features and measurements, apply feature engineering')
     p_process.add_argument('--fdb', metavar='<feature db>', required=True)
@@ -210,8 +236,17 @@ def main():
     p_paramstats.add_argument('-o', metavar='<ablation-scores.pkl>')
     p_paramstats.set_defaults(func=paramstats)
 
+    p_predict = subparsers.add_parser('predict', help='Predict samples from a sample database with a given pre-trained model')
+    p_predict.add_argument('-i', metavar='<samples.db>', required=True)
+    p_predict.add_argument('-m', metavar='<model.pkl>', required=True)
+    p_predict.set_defaults(func=predict)
+
     args = p.parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    except:
+        p.print_help()
+
 
 
 if __name__ == '__main__':

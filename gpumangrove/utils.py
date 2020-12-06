@@ -4,9 +4,214 @@ import pandas as pd
 import sqlite3
 import pickle
 from tqdm import tqdm
+import re
 
 from sklearn.metrics import make_scorer
 from sklearn.model_selection import cross_val_score, GridSearchCV, PredefinedSplit, LeaveOneOut
+
+# TODO this function needs refactoring!
+def convert(args):
+    CUDAFluxMetricDB = args.i
+    FeatureTableDB = args.o
+
+    # Get all Column and Row Labels
+    with sqlite3.Connection(CUDAFluxMetricDB) as conn:
+        cur = conn.cursor()
+
+        cur.execute('select distinct metric from fluxmetrics')
+        metrics = cur.fetchall()
+        cur.execute('select distinct bench,app,dataset,lseq from fluxmetrics')
+        kernels = cur.fetchall()
+
+    # Consistent Mapping/Order of rows and columns
+    row = {}
+    count = 0
+    for kernel in kernels:
+        row[kernel] = count
+        count += 1
+    col = {}
+    count = 0
+    for metric in metrics:
+        col[metric[0]] = count
+        count += 1
+    with sqlite3.Connection(CUDAFluxMetricDB) as conn:
+        data = np.zeros((len(kernels),len(metrics)))
+
+        cur = conn.cursor()
+        cur.execute('select * from fluxmetrics')
+        print("Processing Items..")
+        for item in tqdm(cur.fetchall()):
+            data[row[item[0:4]], col[item[5]]] = item[-1]
+            
+        # Build Dataframe for Labeled Storage
+        df_f = pd.DataFrame(data, 
+                      index=pd.Index(kernels, names=['bench', 'app', 'dataset', 'lseq']), 
+                      columns=[item[0] for item in metrics])
+    # Check for Errors
+    if False:
+        with sqlite3.Connection(CUDAFluxMetricDB) as conn:
+            cur = conn.cursor()
+            cur.execute("select * from fluxmetrics where bench=? and app=? and dataset=? and lseq=?", kernels[0])
+            res = cur.fetchall()
+            print(data[0,:])
+            print([x[-1] for x in res])
+    # Define how instructions are grouped
+    inst_groups = {# Integer Inst
+       r'(add|sub|mul|mad|mul24|mad24|sad|div|rem|abs|neg|min|max|popc|clz|bfind|fns|brev|bfe|bfi|dp4a|dp2a)[\w.]*?.[us](\d+)$' : 'int',
+       # ToDo: extended precission int inst (not found yet)
+       # Floating Inst
+       r'(testp|copysign|add|sub|mul|fma|mad|div|abs|neg|min|max|rcp)[\w.]*?.f(\d+)$' : 'float',
+       r'(sqrt|rsqrt|sin|cos|lg2|ex2)[\w.]*?.f(\d+)$' : 'float.special',
+       # Comparing and Selection inst
+       r'(set|setp|selp|slct)[\w.]*?.\w(\d+)$' : 'comp_sel',
+       # Logic Inst
+       r'(and|or|xor|not|cnot|lop3|shf|shl|shr)[\w.]*?.\w?(\d+|pred)$' : 'logic',
+       # Data Movement Inst
+       r'(ld.global)(.v[42])?.\w(\d+)$' : 'ld.global',
+       r'(ld)(.v[42])?.\w(\d+)$' : 'ld.global',
+       r'(ld.shared)(.v[42])?.\w(\d+)$' : 'ld.shared',
+       r'(ld.volatile.shared)(.v[42])?.\w(\d+)$' : 'ld.shared',
+       r'(ld.const)(.v[42])?.\w(\d+)$' : 'ld.const',
+       r'(ld.local)(.v[42])?.\w(\d+)$' : 'ld.local',
+       r'(ld.param)(.v[42])?.\w(\d+)$' : 'ld.param',
+       r'(st.global)(.v[42])?.\w(\d+)$' : 'st.global',
+       r'(st)(.v[42])?.\w(\d+)$' : 'st.global',
+       r'(st.shared)(.v[42])?.\w(\d+)$' : 'st.shared',
+       r'(st.volatile.shared)(.v[42])?.\w(\d+)$' : 'st.shared',
+       r'(st.const)(.v[42])?.\w(\d+)$' : 'st.const',
+       r'(st.local)(.v[42])?.\w(\d+)$' : 'st.local',
+       r'(st.param)(.v[42])?.\w(\d+)$' : 'st.param',
+       r'(mov)[\w.]*?.\w?(\d+|pred)$' : 'mov',
+       # Data Conversion
+       r'(cvta|cvt)[\w.]*?.\w(\d+)$' : 'cvt',
+       # Control Flow
+       r'(bra|call|ret|exit)[\w.]*?$' : 'control',
+       # Atomic Inst
+       r'(atom.global)[\w.]*?(\d+)$' : 'atom.global',
+       r'(atom.shared)[\w.]*?(\d+)$' : 'atom.shared',
+       # Sync
+       r'bar.sync' : 'bar.sync'
+       # End
+      }
+
+    # Helper function to actually group instructions
+    def meltInstructions(insts, inst_groups = inst_groups):
+        inst_map = { }
+
+        for inst in insts:
+            if inst in { 'gX', 'gY', 'gZ', 'bX', 'bY', 'bZ', 'shm', 'time'}:
+                inst_map[inst] = [inst]
+                continue
+            m = None
+            for ex in inst_groups:
+                m = re.match(ex, inst)
+                if( m is not None):
+                    num_groups = len(m.groups())
+                    #print(inst, m.groups())
+                    if (num_groups >= 3):
+                        if m.group(num_groups-1) is None:
+                            key = inst_groups[ex]+'.'+m.group(num_groups)
+                        else:
+                            key = inst_groups[ex]+'.'+str(int(m.group(num_groups-1)[2:])*int(m.group(num_groups)))
+                    elif (num_groups >= 2):
+                        if m.group(num_groups) == 'pred':
+                            key = inst_groups[ex]+'.'+'32'
+                        else:
+                            key = inst_groups[ex]+'.'+m.group(num_groups)
+                    else:
+                        key = inst_groups[ex]
+                    #print(inst, inst_groups[ex], key, m.groups())
+                    if key in inst_map:
+                        inst_map[key].append(inst)
+                    else:
+                        inst_map[key] = [inst]
+                    break
+            if (m == None):
+                if 'misc' in inst_map:
+                    inst_map['misc'].append(inst)
+                else:
+                    inst_map['misc'] = [inst]
+                print(inst, '\033[1;31mNo Match!\033[0m')
+        return inst_map
+
+    # Produce map for summing up columns
+    inst_map = meltInstructions(df_f.columns.values)
+    # Create grouped dataframe
+    dfg = pd.DataFrame(index=df_f.index, columns=[key for key in inst_map])
+    for key in tqdm(inst_map):
+        dfg[key] = (df_f[inst_map[key]].sum(axis=1))
+    # Analytical Metrics
+
+    feature_map = {}
+
+    for col in [ 'gX', 'gY', 'gZ', 'bX', 'bY', 'bZ', 'shm']:
+        feature_map[col] = dfg[col].values
+
+    feature_map['CTAs'] = dfg['gX'].values * dfg['gY'].values * dfg['gZ'].values
+    feature_map['BlockThreads'] = dfg['bX'].values * dfg['bY'].values * dfg['bZ'].values
+    feature_map['TotalThreads'] = feature_map['CTAs'] * feature_map['BlockThreads']
+
+    def compute_data_vol(df, prefix):
+        cols = set()
+        for col in df.columns.values:
+            if col.startswith(prefix):
+                cols.add(col)
+        res = None
+        for col in cols:
+            if res is None:
+                res = df[col] * int(col.split('.')[-1])/8
+            else: 
+                res += df[col] * int(col.split('.')[-1])/8
+        return res
+
+    feature_map['V_ldGlobal'] = compute_data_vol(dfg, 'ld.global.')
+    feature_map['V_stGlobal'] = compute_data_vol(dfg, 'st.global.')
+    feature_map['V_ldShm'] = compute_data_vol(dfg, 'ld.shared.')
+    feature_map['V_stShm'] = compute_data_vol(dfg, 'st.shared.')
+    feature_map['V_ldParam'] = compute_data_vol(dfg, 'ld.param.')
+    feature_map['V_stParam'] = compute_data_vol(dfg, 'st.param.')
+    feature_map['V_ldLocal'] = compute_data_vol(dfg, 'ld.local.')
+    feature_map['V_stLocal'] = compute_data_vol(dfg, 'st.local.')
+    feature_map['V_ldConst'] = compute_data_vol(dfg, 'ld.const.')
+
+    cols_inst = ['float.32', 'logic.64', 'comp_sel.32', 'int.32', 'cvt.32',
+           'comp_sel.64', 'mov.32', 'logic.32', 'control',
+           'int.64', 'cvt.64', 'ld.global.32', 'ld.param.64',
+           'st.global.32', 'ld.shared.32', 'mov.64',
+           'st.shared.32', 'ld.param.32', 'bar.sync', 'float.64',
+           'ld.const.64', 'ld.const.32', 'misc', 'ld.local.32', 'st.local.32',
+           'st.global.64', 'atom.shared.32', 'ld.shared.64', 'st.shared.64',
+           'comp_sel.16', 'st.global.8', 'ld.global.8', 'mov.16',
+           'ld.global.64', 'int.16', 'ld.local.8', 'st.local.8',
+           'st.param.64', 'st.param.32', 'atom.global.32', 'logic.16',
+           'ld.global.128', 'ld.local.64', 'st.local.64', 'cvt.16',
+           'st.global.128', 'ld.shared.8', 'ld.param.8','float.special.32','float.special.64']
+
+    # Hack to avoid error on missing columns
+    for col in cols_inst:
+        if col not in dfg.columns:
+            dfg[col] = 0
+    feature_map['total_inst'] = dfg[cols_inst].values.sum(axis=1)
+
+    for col in cols_inst:
+        feature_map[col] = dfg[col].values
+
+    features = pd.DataFrame(feature_map)
+    # Add Column with Kernel Names
+    df_name = None
+    with sqlite3.Connection(CUDAFluxMetricDB) as conn:
+        # Build Pandas Dataframe from SQL Query
+        df_name = pd.read_sql_query(
+            'select distinct bench,app,dataset,lseq,name from fluxmetrics', 
+            conn, index_col=['bench','app','dataset','lseq'])
+    if features.shape[0] == df_name.shape[0]:
+        features = features.join(df_name)
+    else:
+        print("Shape mismatch!")
+   # Dump Dataframe into SQL Table
+    with sqlite3.connect(FeatureTableDB) as conn:
+        features.to_sql('fluxfeatures',conn)
+        conn.commit()
 
 
 def join_features_measurements(feature_db=None, measurement_db=None, grouping='lconf', aggregator='median'):
@@ -76,6 +281,8 @@ def process_features(feature_df, db_path=None):
     cols['global_memory_volume'] = df['V_stGlobal'].values + df['V_ldGlobal'].values + df['atom.global.32'].values * 4
     # cols['contant_memory_volume'] = df['V_ldConst'].values
     # cols['local_memory_volume'] = df['V_ldLocal'].values + df['V_stLocal'].values
+    if 'V_stParam' not in df.columns:
+        df['V_stParam'] = 0
     cols['param_memory_volume'] = df['V_ldParam'].values + df['V_stParam'].values
     cols['shared_memory_volume'] = df['V_ldShm'].values + df['V_stShm'].values
     cols['arithmetic_intensity'] = cols['arithmetic_operations'] / (
