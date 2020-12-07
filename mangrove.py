@@ -6,6 +6,7 @@ import pickle
 from argparse import ArgumentParser
 import random
 import timeit
+import sqlite3
 
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.ensemble import ExtraTreesRegressor
@@ -167,13 +168,20 @@ def predict(args):
         'select * from samples',
         conn, index_col=['bench','app','dataset','name'])
 
-    samples.drop(columns=['index','time'])
+    y_true = samples['time']
+    samples = samples.drop(columns=['index','time'])
+
+    print(samples.columns)
 
     X = samples.values
     model = pickle.load(open(model_path, "rb"))
     y_pred = model.predict(X)
+    results = pd.DataFrame()
+    results['y_true'] = y_true
+    results['y_pred'] = y_pred
+    results['pred/true'] = y_pred/y_true
     print('Results:')
-    print(y_pred)
+    print(results)
 
 def main():
     # TODO global random state
@@ -244,7 +252,7 @@ def main():
     args = p.parse_args()
     try:
         args.func(args)
-    except:
+    except AttributeError:
         p.print_help()
 
 
