@@ -180,6 +180,11 @@ def predict(args):
     results['y_true'] = y_true
     results['y_pred'] = y_pred
     results['pred/true'] = y_pred/y_true
+    # Make sure everything is displayed:
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
+    
     print('Results:')
     print(results)
 
