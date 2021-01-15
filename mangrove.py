@@ -187,6 +187,9 @@ def predict(args):
     
     print('Results:')
     print(results)
+    
+    if args.o is not None:
+        pickle.dump(results, open(args.o,"wb"))
 
 def main():
     # TODO global random state
@@ -252,6 +255,7 @@ def main():
     p_predict = subparsers.add_parser('predict', help='Predict samples from a sample database with a given pre-trained model')
     p_predict.add_argument('-i', metavar='<samples.db>', required=True)
     p_predict.add_argument('-m', metavar='<model.pkl>', required=True)
+    p_predict.add_argument('-o', metavar='<results.pkl>')
     p_predict.set_defaults(func=predict)
 
     args = p.parse_args()
