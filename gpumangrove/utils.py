@@ -227,12 +227,12 @@ def join_features_measurements(feature_db=None, measurement_db=None, grouping='l
         with sqlite3.Connection(measurement_db) as conn:
             df_time = pd.read_sql_query("select * from kerneltime", conn)
         df_grouped = df_time.merge(df_features, on=['bench','app','dataset','lseq'], how='inner').groupby(groups[grouping])
-        df_std = df_grouped.std().reset_index()
+        # df_std = df_grouped.std().reset_index()
 
 
     elif ('power' in str.lower(measurement_db)):
         with sqlite3.Connection(measurement_db) as conn:
-            df_power = pd.read_sql_query("select * from power_filtered", conn)
+            df_power = pd.read_sql_query("select * from kernelpower", conn)
         df_grouped = df_power.merge(df_features, on=['bench','app','dataset','lseq'], how='inner').groupby(groups[grouping])
 
     if aggregator == 'median':
@@ -240,9 +240,9 @@ def join_features_measurements(feature_db=None, measurement_db=None, grouping='l
     if aggregator == 'mean':
         df = df_grouped.mean().reset_index()
 
-    if ('time' in str.lower(measurement_db)):
-        with pd.option_context('display.max_rows', None, 'display.max_columns', None, 'display.max_colwidth', -1):
-            print(df[df_std['time'] > df['time']][['bench','app','dataset','name']])
+    #if ('time' in str.lower(measurement_db)):
+    #    with pd.option_context('display.max_rows', None, 'display.max_columns', None, 'display.max_colwidth', -1):
+    #        print(df[df_std['time'] > df['time']][['bench','app','dataset','name']])
 
     # Drop  lseq
     df.drop(columns=['lseq'], inplace=True)
@@ -290,8 +290,8 @@ def process_features(feature_df, db_path=None):
 
     if 'time' in df.columns:
         cols['time'] = df['time']
-    elif 'aver_power' in df.columns:
-        cols['power'] = df['aver_power']
+    elif 'power' in df.columns:
+        cols['power'] = df['power']
 
 
     res = pd.DataFrame(cols)
